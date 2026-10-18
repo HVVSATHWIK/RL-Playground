@@ -17,7 +17,6 @@ import {
   PUNCH_COOLDOWN,
   KICK_COOLDOWN,
   BLOCK_DURATION,
-  DODGE_COOLDOWN,
   STUN_DURATION,
   MAX_STAMINA,
   KNOCKBACK,
@@ -292,10 +291,10 @@ export function stepArena(
   // Continuous shaping reward for closing distance vs stalling far away
   const potPrevR = -Math.abs(prevDist - 72) / 140;
   const potNextR = -Math.abs(distNow - 72) / 140;
-  let redReward = (0.95 * potNextR - potPrevR) * 2.4 * weights.spacing - 0.03;
-  let blueReward = (0.95 * potNextR - potPrevR) * 2.4 * weights.spacing - 0.03;
-  if (redMove.initiatedAttack && distNow > KICK_RANGE + 5) redReward -= 1.25 * weights.spacing;
-  if (blueMove.initiatedAttack && distNow > KICK_RANGE + 5) blueReward -= 1.25 * weights.spacing;
+  let redReward = (0.95 * potNextR - potPrevR) * 2.4 * rewardWeights.spacing - 0.03;
+  let blueReward = (0.95 * potNextR - potPrevR) * 2.4 * rewardWeights.spacing - 0.03;
+  if (redMove.initiatedAttack && distNow > KICK_RANGE + 5) redReward -= 1.25 * rewardWeights.spacing;
+  if (blueMove.initiatedAttack && distNow > KICK_RANGE + 5) blueReward -= 1.25 * rewardWeights.spacing;
 
   const newDist = Math.abs(blue.x - red.x);
   if (prevDist > KICK_RANGE) {

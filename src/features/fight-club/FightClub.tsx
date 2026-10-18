@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { Swords, Activity, Trophy, Compass, Box, Layers } from 'lucide-react';
+import { Swords, Activity, Box, Layers } from 'lucide-react';
 import { useFightStore, type RoboMode } from './stores/fightStore';
 import { ArenaCanvas } from './components/ArenaCanvas';
 import { Arena3DCanvas } from './components/Arena3DCanvas';
