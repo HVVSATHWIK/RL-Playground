@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <rect width="64" height="64" rx="16" fill="#1e40af" />
+  <!-- Human Architect Drafting Compass -->
+  <circle cx="32" cy="14" r="5" fill="#ffffff" />
+  <circle cx="32" cy="14" r="2.2" fill="#1e40af" />
+  <!-- Left Compass Leg -->
+  <path d="M29 17 L17 49" stroke="#ffffff" stroke-width="3.5" stroke-linecap="round" />
+  <!-- Right Compass Leg -->
+  <path d="M35 17 L47 49" stroke="#ffffff" stroke-width="3.5" stroke-linecap="round" />
+  <!-- Precision Adjustment Screw -->
+  <path d="M21 33 L43 33" stroke="#38bdf8" stroke-width="2.5" stroke-linecap="round" />
+  <circle cx="32" cy="33" r="3" fill="#ffffff" />
+  <!-- Paper drafting guidelines below -->
+  <path d="M12 54 L52 54" stroke="#60a5fa" stroke-width="2" stroke-linecap="round" stroke-dasharray="3 3" />
+</svg>

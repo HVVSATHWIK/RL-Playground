@@ -1,0 +1,7 @@
+  "name": "NN Playground",
+  "description": "Robo-Dojo: Professional Reinforcement Learning Mecha Combat Arena featuring Deep Q-Networks (DQN), Tabular Q-Learning, procedural 3D mecha rendering, and interactive algorithm intelligence inspection.",
+  "permissions": [],
+  "capabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
