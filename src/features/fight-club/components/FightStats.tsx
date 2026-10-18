@@ -15,10 +15,9 @@ export function FightStats() {
     blue,
   } = useFightStore();
 
-  const dist = Math.round(Math.abs(red.x - blue.x));
+  const dist = Math.round(Math.sqrt((red.x - blue.x) ** 2 + (red.z - blue.z) ** 2));
 
   if (mode === 'dojo') {
-    // Neural Q-value inspector & fight spacing
     const maxQ = Math.max(...lastBlueQValues.map(Math.abs), 0.1);
 
     return (
@@ -27,10 +26,10 @@ export function FightStats() {
           <div className="flex items-center gap-3">
             <span className="text-xs font-bold text-blue-950 uppercase tracking-wide flex items-center gap-1.5">
               <Gauge size={14} className="text-blue-600" />
-              Live Combat Telemetry & Deep Q-Network Decisions
+              Live 3D Combat Telemetry & Deep Q-Network Decisions
             </span>
             <span className="text-[10px] font-mono px-2.5 py-0.5 rounded-full bg-blue-50 text-blue-800 border border-blue-200 font-semibold">
-              Spacing: {dist}px {dist <= 55 ? '(Punch Range)' : dist <= 75 ? '(Kick Range)' : '(Approaching)'}
+              3D Spacing: {dist}px {dist <= 56 ? '(Punch Range)' : dist <= 76 ? '(Kick Range)' : '(Footsies)'}
             </span>
           </div>
           <div className="text-[11px] text-slate-500 font-mono">
@@ -38,7 +37,6 @@ export function FightStats() {
           </div>
         </div>
 
-        {/* Q-Value Action Bars */}
         <div className="flex-1 grid grid-cols-6 gap-2 items-end pb-1">
           {ACTIONS.map((act, i) => {
             const qVal = lastBlueQValues[i] || 0;
@@ -79,7 +77,6 @@ export function FightStats() {
   }
 
   if (mode === 'train') {
-    // Training Curves (Rewards + Loss)
     const rewards = dqnEpisodeRewards.slice(-60);
     const width = 600;
     const height = 120;
@@ -133,7 +130,6 @@ export function FightStats() {
     );
   }
 
-  // Showtime / Standard Mode
   const data = roundRewards.slice(-150);
   const width = 500;
   const height = 120;

@@ -63,6 +63,9 @@ class PersistenceService {
         if (!db.objectStoreNames.contains('dqn')) {
           db.createObjectStore('dqn');
         }
+        if (!db.objectStoreNames.contains('logs')) {
+          db.createObjectStore('logs', { keyPath: 'id', autoIncrement: true });
+        }
         if (!db.objectStoreNames.contains('nn')) {
           db.createObjectStore('nn');
         }

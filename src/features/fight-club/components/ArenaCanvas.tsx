@@ -133,7 +133,7 @@ function drawRobot(ctx: CanvasRenderingContext2D, f: FighterState, color: string
       ctx.fillStyle = `rgba(56, 189, 248, ${alpha})`;
       ctx.font = `900 ${12 + d.age * 0.15}px system-ui, sans-serif`;
       ctx.textAlign = 'center';
-      ctx.fillText('⚡ EVADED!', d.x, FLOOR_Y - ROBOT_HEIGHT - 32 - d.age * 1.5);
+      ctx.fillText('EVADED', d.x, FLOOR_Y - ROBOT_HEIGHT - 32 - d.age * 1.5);
     } else {
       const alpha = Math.max(0, 1 - d.age / 30);
       ctx.fillStyle = `rgba(255, 60, 60, ${alpha})`;

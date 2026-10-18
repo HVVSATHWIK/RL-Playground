@@ -16,20 +16,22 @@ export const ARENA_DEPTH = 400; // 3D ring depth (-200 to +200)
 export const FLOOR_Y = 320;
 export const ROBOT_WIDTH = 40;
 export const ROBOT_HEIGHT = 70;
-export const MOVE_SPEED = 6;
-export const DODGE_SPEED = 26;
-export const PUNCH_RANGE = 55;
-export const KICK_RANGE = 75;
+export const MOVE_SPEED = 8.5;
+export const DODGE_SPEED = 24;
+export const PUNCH_RANGE = 78;
+export const KICK_RANGE = 102;
 export const PUNCH_DAMAGE = 10;
 export const KICK_DAMAGE = 15;
-export const BLOCK_REDUCTION = 0.8;
-export const PUNCH_COOLDOWN = 8;
-export const KICK_COOLDOWN = 14;
-export const BLOCK_DURATION = 10;
-export const DODGE_COOLDOWN = 12;
-export const STUN_DURATION = 6;
+export const BLOCK_REDUCTION = 0.7;
+export const PUNCH_COOLDOWN = 6;
+export const KICK_COOLDOWN = 10;
+export const BLOCK_DURATION = 6;
+export const DODGE_COOLDOWN = 10;
+export const STUN_DURATION = 2;
 export const MAX_HP = 100;
+export const MAX_STAMINA = 100;
 export const KNOCKBACK = 12;
+export const GRAVITY = 2.4;
 
 export type AnimState = 'idle' | 'punching' | 'kicking' | 'blocking' | 'dodging' | 'stunned' | 'hit';
 
@@ -40,52 +42,74 @@ export interface DamageIndicator {
   age: number;
   isEvade?: boolean;
   isCrit?: boolean;
+  isBlocked?: boolean;
   label?: string;
 }
 
 export interface FighterState {
   x: number;
-  z: number; // 3D arena depth (-200 to +200)
+  y: number;
+  z: number;
+  vx: number;
+  vy: number;
+  vz: number;
   hp: number;
+  stamina: number;
   facing: 1 | -1; // 1 = right (+X), -1 = left (-X)
   animState: AnimState;
   animTimer: number;
   cooldown: number;
+  dodgeCooldown?: number;
+  dodgeTimer?: number;
   isBlocking: boolean;
+  consecutiveBlocks: number;
   lastAction: Action;
   roundReward: number;
-  hitFlash: number; // frames remaining for hit flash
+  hitFlash: number;
   consecutiveAttacks: number;
+  strikeHand: 0 | 1;
+  sidestepDir: 1 | -1;
   damageNumbers: DamageIndicator[];
 }
 
 export function createFighter(x: number, facing: 1 | -1, z = 0): FighterState {
   return {
     x,
+    y: 0,
     z,
+    vx: 0,
+    vy: 0,
+    vz: 0,
     hp: MAX_HP,
+    stamina: MAX_STAMINA,
     facing,
     animState: 'idle',
     animTimer: 0,
     cooldown: 0,
+    dodgeCooldown: 0,
+    dodgeTimer: 0,
     isBlocking: false,
+    consecutiveBlocks: 0,
     lastAction: 'idle',
     roundReward: 0,
     hitFlash: 0,
     consecutiveAttacks: 0,
+    strikeHand: 0,
+    sidestepDir: facing,
     damageNumbers: [],
   };
 }
 
-// Discretize state for tabular Q-table incorporating 3D Euclidean distance
+// Ego-centric discretized state (1600 states) so Tabular Q works identically on left or right side
 export function discretizeState(self: FighterState, opponent: FighterState): number {
-  const posZone = Math.min(9, Math.max(0, Math.floor(self.x / (ARENA_WIDTH / 10))));
+  const relX = self.x <= opponent.x ? self.x : ARENA_WIDTH - self.x;
+  const posZone = Math.min(9, Math.max(0, Math.floor(relX / (ARENA_WIDTH / 10))));
   const hpLevel = self.hp > 75 ? 0 : self.hp > 50 ? 1 : self.hp > 25 ? 2 : 3;
 
   const dx = self.x - opponent.x;
-  const dz = self.z - opponent.z;
+  const dz = (self.z - opponent.z) * 0.35;
   const dist = Math.sqrt(dx * dx + dz * dz);
-  const distLevel = dist < 50 ? 0 : dist < 100 ? 1 : dist < 200 ? 2 : dist < 400 ? 3 : 4;
+  const distLevel = dist < 65 ? 0 : dist < 105 ? 1 : dist < 180 ? 2 : dist < 320 ? 3 : 4;
 
   const oppAction =
     opponent.animState === 'punching' || opponent.animState === 'kicking'

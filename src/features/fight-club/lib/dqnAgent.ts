@@ -15,48 +15,51 @@ import {
 export const OBSERVATION_SIZE = 16;
 
 /**
- * Extracts a normalized 16-dimensional continuous feature vector from fighter states.
+ * Extracts a side-invariant (ego-centric) 16-dimensional continuous feature vector
+ * so the trained Q-network generalizes identically whether playing as Red (left) or Blue (right).
  */
 export function extractObservation(self: FighterState, opponent: FighterState): number[] {
-  const normSelfX = Math.max(0, Math.min(1, self.x / ARENA_WIDTH));
+  const onLeft = self.x <= opponent.x;
+  const egoSelfX = onLeft ? self.x / ARENA_WIDTH : (ARENA_WIDTH - self.x) / ARENA_WIDTH;
+  const egoOppX = onLeft ? opponent.x / ARENA_WIDTH : (ARENA_WIDTH - opponent.x) / ARENA_WIDTH;
+
   const normSelfZ = Math.max(0, Math.min(1, (self.z + ARENA_DEPTH / 2) / ARENA_DEPTH));
   const normSelfHp = Math.max(0, Math.min(1, self.hp / MAX_HP));
 
-  const normOppX = Math.max(0, Math.min(1, opponent.x / ARENA_WIDTH));
   const normOppZ = Math.max(0, Math.min(1, (opponent.z + ARENA_DEPTH / 2) / ARENA_DEPTH));
   const normOppHp = Math.max(0, Math.min(1, opponent.hp / MAX_HP));
 
-  const dx = opponent.x - self.x;
-  const dz = opponent.z - self.z;
+  const dx = Math.abs(opponent.x - self.x);
+  const dz = (opponent.z - self.z) * 0.35;
   const dist = Math.sqrt(dx * dx + dz * dz);
   const normDist = Math.max(0, Math.min(1, dist / ARENA_WIDTH));
 
-  const facingOpponent = self.x <= opponent.x ? 1 : -1;
+  const inPunchRange = dist <= PUNCH_RANGE ? 1 : 0;
+  const inKickRange = dist <= KICK_RANGE ? 1 : 0;
   const hpAdvantage = Math.max(-1, Math.min(1, (self.hp - opponent.hp) / MAX_HP));
 
   const selfReady = self.cooldown <= 0 ? 1 : 0;
   const selfBlocking = self.isBlocking ? 1 : 0;
   const selfStunned = self.animState === 'stunned' ? 1 : 0;
-  const selfAttacking = self.animState === 'punching' || self.animState === 'kicking' ? 1 : 0;
 
   const oppBlocking = opponent.isBlocking ? 1 : 0;
   const oppAttacking = opponent.animState === 'punching' || opponent.animState === 'kicking' ? 1 : 0;
   const oppThreat = oppAttacking && dist <= KICK_RANGE + 20 ? 1 : 0;
 
   return [
-    normSelfX,
+    egoSelfX,
     normSelfZ,
     normSelfHp,
-    normOppX,
+    egoOppX,
     normOppZ,
     normOppHp,
     normDist,
-    facingOpponent,
+    inPunchRange,
+    inKickRange,
     hpAdvantage,
     selfReady,
     selfBlocking,
     selfStunned,
-    selfAttacking,
     oppBlocking,
     oppAttacking,
     oppThreat,
@@ -126,14 +129,14 @@ export interface DQNConfig {
 }
 
 export const DEFAULT_DQN_CONFIG: DQNConfig = {
-  learningRate: 0.005,
+  learningRate: 0.008,
   gamma: 0.95,
-  epsilonStart: 0.8,
+  epsilonStart: 0.35,
   epsilonMin: 0.05,
-  epsilonDecay: 0.995,
+  epsilonDecay: 0.992,
   batchSize: 32,
-  targetUpdateFreq: 120,
-  tau: 0.15,
+  targetUpdateFreq: 80,
+  tau: 0.2,
   bufferCapacity: 5000,
 };
 
@@ -166,6 +169,8 @@ export class DQNAgent {
   stepCount: number;
   episodesTrained: number;
   lastLoss: number;
+  lastTDError: number;
+  lastTargetQ: number;
   lossHistory: number[];
   recentRewards: number[];
 
@@ -175,6 +180,8 @@ export class DQNAgent {
     this.stepCount = 0;
     this.episodesTrained = 0;
     this.lastLoss = 0;
+    this.lastTDError = 0;
+    this.lastTargetQ = 0;
     this.lossHistory = [];
     this.recentRewards = [];
 
@@ -193,9 +200,18 @@ export class DQNAgent {
   }
 
   /**
-   * Action selection using the trained Q-network with combat action validation.
-   * Prevents picking unavailable attacks (on cooldown / out of range) or moving into walls.
+   * Maps world action index (0=moveLeft, 1=moveRight) to ego-centric network index
+   * (0=retreat, 1=approach) when fighter is on the right side of the opponent.
    */
+  toEgoActionIdx(worldActionIdx: number, self?: FighterState, opponent?: FighterState): number {
+    if (!self || !opponent) return worldActionIdx;
+    if (self.x > opponent.x) {
+      if (worldActionIdx === 0) return 1; // moveLeft is approach when on right
+      if (worldActionIdx === 1) return 0; // moveRight is retreat when on right
+    }
+    return worldActionIdx;
+  }
+
   chooseAction(
     state: number[],
     greedy = false,
@@ -207,123 +223,50 @@ export class DQNAgent {
     qValues: number[];
     isExploration: boolean;
   } {
-    const rawQValues = this.predict(state);
-    const qValues = [...rawQValues];
+    const rawEgoQ = this.predict(state);
+    // Map ego Q-values [0=retreat, 1=approach] back to world [0=moveLeft, 1=moveRight]
+    const worldQ = [...rawEgoQ];
+    if (self && opponent && self.x > opponent.x) {
+      worldQ[0] = rawEgoQ[1]; // moveLeft = approach
+      worldQ[1] = rawEgoQ[0]; // moveRight = retreat
+    }
 
-    // Determine legal action masks based on fighter state and spatial geometry
-    // Actions: [0: moveLeft, 1: moveRight, 2: punch, 3: kick, 4: block, 5: dodge]
+    const qValues = [...worldQ];
     const legalMask = [true, true, true, true, true, true];
 
     if (self && opponent) {
-      const dx = opponent.x - self.x;
-      const dz = opponent.z - self.z;
-      const dist = Math.sqrt(dx * dx + dz * dz);
-      const isCoolingDown = self.cooldown > 0;
-      const isStunned = self.animState === 'stunned';
-      const oppAttacking = opponent.animState === 'punching' || opponent.animState === 'kicking';
-
-      const approachXIdx = self.x < opponent.x ? 1 : 0; // 1 = moveRight, 0 = moveLeft
-      const retreatXIdx = self.x < opponent.x ? 0 : 1;
-
-      if (isStunned) {
-        // Stunned: can only idle / recover
-        return {
-          action: 'idle',
-          actionIdx: -1,
-          qValues,
-          isExploration: false,
-        };
+      if (self.animState === 'stunned') {
+        return { action: 'idle', actionIdx: -1, qValues, isExploration: false };
       }
-
-      // 1. Cooldown constraints: attacks and dodge require cooldown recovery
-      if (isCoolingDown) {
-        legalMask[2] = false; // punch
-        legalMask[3] = false; // kick
-        legalMask[5] = false; // dodge
+      if (self.cooldown > 0 || self.stamina < 6) {
+        legalMask[2] = false;
+        legalMask[3] = false;
       }
-
-      // 2. Range constraints: mask out attacks when out of strike reach
-      if (dist > KICK_RANGE + 15) {
-        legalMask[2] = false; // punch
-        legalMask[3] = false; // kick
+      if ((self.dodgeCooldown || 0) > 0 || self.stamina < 10) {
+        legalMask[5] = false;
       }
-
-      // 3. Corner constraints: don't retreat when already far
-      if (dist > KICK_RANGE + 40) {
-        legalMask[retreatXIdx] = false;
-      }
-
-      // 4. Combat Rhythm & Combo Pacing: Prevent endless mindless attack spam
-      const hasComboed = (self.consecutiveAttacks || 0) >= 2;
-      if (hasComboed) {
-        // Combo limit reached: fighter must reset neutral, step back, feint, or raise guard
-        legalMask[2] = false; // Disallow punch immediately after combo
-        legalMask[3] = false; // Disallow kick immediately after combo
-        qValues[retreatXIdx] += 1.2; // Step back to reset neutral spacing
-        qValues[5] += 1.0; // Tactical backward dodge
-        qValues[4] += 0.8; // Or raise guard
-      }
-
-      // 5. Strategic Defense Against Incoming Strikes
-      if (oppAttacking && dist <= KICK_RANGE + 30) {
-        // Opponent is actively swinging! Raise guard or dodge out of way, do not blindly trade hits!
-        qValues[2] -= 1.5; // Penalize punching directly into incoming strike
-        qValues[3] -= 1.5; // Penalize kicking directly into incoming strike
-        qValues[4] += 2.0; // Strong boost to tactical Block
-        qValues[5] += 1.8; // Strong boost to evasive Dodge
-      } else if (!oppAttacking && dist > 120) {
-        // Discourage passive block spam at long range
-        qValues[4] -= 0.6;
-      }
-
-      // 6. Tactical Response to Opponent Shield / Block
-      if (opponent.isBlocking && dist <= KICK_RANGE + 10) {
-        // Opponent is blocking: do NOT punch blindly into the shield
-        qValues[2] -= 1.2; // Discourage punch into block
-        qValues[3] += 0.6; // Heavy kick can challenge or break guard
-        qValues[retreatXIdx] += 0.8; // Or step back to bait shield drop
-        qValues[5] += 0.7; // Or dodge back
-      }
-
-      // 7. Tactical Strike Opportunities (Measured, calculated pacing)
-      if (!hasComboed && !oppAttacking) {
-        if (dist <= PUNCH_RANGE && !isCoolingDown) {
-          if (!opponent.isBlocking) {
-            qValues[2] += 0.5; // High priority punch on exposed opponent
-          }
-        } else if (dist <= KICK_RANGE && !isCoolingDown) {
-          qValues[3] += 0.45; // Kick opportunity at mid-range
-        }
-      }
-
-      // 8. Movement Spacing & Footsies (Closing or maintaining ideal strike distance)
-      if (dist > KICK_RANGE + 5) {
-        qValues[approachXIdx] += 0.55; // Close distance
-      } else if (dist < 40 && !isCoolingDown && !oppAttacking) {
-        // Too crowded: step back slightly for leverage
-        qValues[retreatXIdx] += 0.35;
+      if ((self.consecutiveAttacks || 0) >= 3) {
+        qValues[2] -= 0.65;
+        qValues[3] -= 0.65;
       }
     }
 
-    // Get list of valid action indices
     const validIndices: number[] = [];
     for (let i = 0; i < NUM_ACTIONS; i++) {
       if (legalMask[i]) validIndices.push(i);
     }
-    const eligibleIndices = validIndices.length > 0 ? validIndices : [0, 1, 2, 3, 4, 5];
+    const eligibleIndices = validIndices.length > 0 ? validIndices : [0, 1];
 
-    // Epsilon-greedy exploration
     if (!greedy && Math.random() < this.epsilon) {
       const randomIdx = eligibleIndices[Math.floor(Math.random() * eligibleIndices.length)];
       return {
         action: ACTIONS[randomIdx],
         actionIdx: randomIdx,
-        qValues: rawQValues,
+        qValues: worldQ,
         isExploration: true,
       };
     }
 
-    // Greedy exploitation among eligible legal combat actions
     let bestIdx = eligibleIndices[0];
     let bestVal = qValues[bestIdx];
     for (const idx of eligibleIndices) {
@@ -336,32 +279,51 @@ export class DQNAgent {
     return {
       action: ACTIONS[bestIdx],
       actionIdx: bestIdx,
-      qValues: rawQValues,
+      qValues: worldQ,
       isExploration: false,
     };
   }
 
-  storeTransition(state: number[], action: number, reward: number, nextState: number[], done: boolean): void {
-    if (action >= 0 && action < NUM_ACTIONS) {
-      this.replayBuffer.push({ state, action, reward, nextState, done });
+  storeTransition(
+    state: number[],
+    action: number,
+    reward: number,
+    nextState: number[],
+    done: boolean,
+    self?: FighterState,
+    opponent?: FighterState
+  ): void {
+    const egoAct = this.toEgoActionIdx(action, self, opponent);
+    if (egoAct >= 0 && egoAct < NUM_ACTIONS) {
+      this.replayBuffer.push({ state, action: egoAct, reward, nextState, done });
+      // Immediate single-transition TD update so the robot learns from every single action
+      const curQ = this.predict(state);
+      let targetQ = reward;
+      if (!done) {
+        const nextTargetQ = this.predictTarget(nextState);
+        targetQ += this.config.gamma * Math.max(...nextTargetQ);
+      }
+      const err = Math.max(-4, Math.min(4, curQ[egoAct] - targetQ));
+      const grad = new Array(NUM_ACTIONS).fill(0);
+      grad[egoAct] = err;
+      this.qNetwork.backward(grad, this.config.learningRate);
     }
   }
 
-  trainStep(): { loss: number } | null {
-    if (this.replayBuffer.size() < this.config.batchSize) {
+  trainStep(): { loss: number; tdError: number; targetQ: number } | null {
+    if (this.replayBuffer.size() < 16) {
       return null;
     }
 
-    const batch = this.replayBuffer.sample(this.config.batchSize);
+    const batch = this.replayBuffer.sample(Math.min(this.config.batchSize, this.replayBuffer.size()));
     let totalLoss = 0;
+    let lastErr = 0;
+    let lastTgt = 0;
 
     for (const transition of batch) {
       const { state, action, reward, nextState, done } = transition;
-
-      // Current Q predictions
       const currentQ = this.predict(state);
 
-      // Target calculation using Bellman equation with Target Network
       let targetQ = reward;
       if (!done) {
         const nextTargetQ = this.predictTarget(nextState);
@@ -369,23 +331,24 @@ export class DQNAgent {
         targetQ += this.config.gamma * maxNextTarget;
       }
 
-      // Compute TD error and clip for numerical stability (Huber loss gradient clipping)
       const currentVal = currentQ[action];
       const error = currentVal - targetQ;
       const clippedError = Math.max(-4, Math.min(4, error));
 
+      lastErr = targetQ - currentVal;
+      lastTgt = targetQ;
       totalLoss += clippedError * clippedError;
 
-      // Output gradient: 0 for all actions except the chosen one
       const outputGradient = new Array(NUM_ACTIONS).fill(0);
       outputGradient[action] = clippedError;
 
-      // Backpropagation through primary Q-network
       this.qNetwork.backward(outputGradient, this.config.learningRate);
     }
 
     const avgLoss = totalLoss / batch.length;
     this.lastLoss = avgLoss;
+    this.lastTDError = lastErr;
+    this.lastTargetQ = lastTgt;
 
     if (this.lossHistory.length >= 100) {
       this.lossHistory.shift();
@@ -394,12 +357,11 @@ export class DQNAgent {
 
     this.stepCount++;
 
-    // Periodic / soft target network update
     if (this.stepCount % this.config.targetUpdateFreq === 0) {
       this.targetNetwork.copyWeightsFrom(this.qNetwork, this.config.tau);
     }
 
-    return { loss: avgLoss };
+    return { loss: avgLoss, tdError: lastErr, targetQ: lastTgt };
   }
 
   decayEpsilon(): void {
@@ -420,6 +382,8 @@ export class DQNAgent {
     this.stepCount = 0;
     this.episodesTrained = 0;
     this.lastLoss = 0;
+    this.lastTDError = 0;
+    this.lastTargetQ = 0;
     this.lossHistory = [];
     this.recentRewards = [];
   }
@@ -457,11 +421,9 @@ export class DQNAgent {
   importFromJSON(jsonString: string): { success: boolean; error?: string } {
     try {
       const data = JSON.parse(jsonString) as SerializedDQN;
-
       if (!data || data.format !== 'robo-dojo-agent') {
         return { success: false, error: 'Invalid file format. Expected robo-dojo-agent format.' };
       }
-
       if (
         !data.architecture ||
         data.architecture.inputSize !== OBSERVATION_SIZE ||
@@ -472,11 +434,9 @@ export class DQNAgent {
           error: `Architecture mismatch. Expected input: ${OBSERVATION_SIZE}, output: ${NUM_ACTIONS}`,
         };
       }
-
       if (!Array.isArray(data.weights) || !Array.isArray(data.biases)) {
         return { success: false, error: 'Malformed weights or biases in model payload.' };
       }
-
       for (const layerW of data.weights) {
         for (const row of layerW) {
           for (const val of row) {
@@ -486,18 +446,14 @@ export class DQNAgent {
           }
         }
       }
-
       this.qNetwork.setWeightsAndBiases(data.weights, data.biases);
       this.targetNetwork.copyWeightsFrom(this.qNetwork, 1.0);
-
       if (data.config) {
         this.config = { ...this.config, ...data.config };
       }
-
       if (data.stats?.episodesTrained) {
         this.episodesTrained = data.stats.episodesTrained;
       }
-
       return { success: true };
     } catch (err: any) {
       return { success: false, error: `Failed to parse JSON model: ${err.message}` };

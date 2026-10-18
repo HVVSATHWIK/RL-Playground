@@ -42,21 +42,17 @@ export interface HitEvent {
 
 interface FightState {
   lastHitEvent: HitEvent | null;
-  // Mode
   mode: RoboMode;
   redPolicy: FighterPolicy;
   bluePolicy: FighterPolicy;
 
-  // Agents
   dqnAgent: DQNAgent;
   redTabularAgent: FightAgent;
   blueTabularAgent: FightAgent;
 
-  // Arena Fighters
   red: FighterState;
   blue: FighterState;
 
-  // Simulation parameters
   round: number;
   stepCount: number;
   maxSteps: number;
@@ -71,19 +67,17 @@ interface FightState {
   redHitsThisRound: number;
   blueHitsThisRound: number;
 
-  // Telemetry
   lastRedQValues: number[];
   lastBlueQValues: number[];
   lastRedAction: Action;
   lastBlueAction: Action;
+  queuedHumanAction: Action | null;
 
-  // Tabular Hyperparameters
   epsilon: number;
   alpha: number;
   gamma: number;
   useExpertStart: boolean;
 
-  // DQN Hyperparameters & Reward Shaping
   rewardWeights: RewardWeights;
   dqnConfig: DQNConfig;
   dqnLossHistory: number[];
@@ -92,17 +86,15 @@ interface FightState {
   trainingTargetEpisodes: number;
   isTrainingActive: boolean;
 
-  // Benchmark stats
   evalResults: EvalBenchmarkResult | null;
   evalTargetRounds: number;
 
-  // Mode status
   isShowtime: boolean;
 
-  // Actions
   setMode: (mode: RoboMode) => void;
   setRedPolicy: (p: FighterPolicy) => void;
   setBluePolicy: (p: FighterPolicy) => void;
+  dispatchHumanAction: (action: Action) => void;
 
   step: () => void;
   play: () => void;
@@ -111,30 +103,26 @@ interface FightState {
   resetAgents: () => void;
   setSpeed: (s: number) => void;
 
-  // Tabular setters
   setEpsilon: (v: number) => void;
   setAlpha: (v: number) => void;
   setGamma: (v: number) => void;
   setUseExpertStart: (v: boolean) => void;
   setShowtime: (v: boolean) => void;
 
-  // DQN & Training studio setters
   setRewardWeights: (weights: Partial<RewardWeights>) => void;
   setDQNConfig: (config: Partial<DQNConfig>) => void;
   setTrainingTargetEpisodes: (episodes: number) => void;
   warmStartDQN: () => void;
   startTrainingStudio: () => void;
   stopTrainingStudio: () => void;
-  runBenchmark: (rounds?: number) => void;
+  runBenchmark: (rounds?: number, opponentPolicy?: FighterPolicy) => void;
 
-  // Model serialization & Persistence
   exportDQNModel: () => string;
   importDQNModel: (jsonString: string) => { success: boolean; error?: string };
   loadPresetDQN: (preset: 'balanced' | 'aggressive' | 'defensive') => void;
   loadFromPersistence: () => Promise<void>;
   saveToPersistence: () => Promise<void>;
 
-  // 3D Rendering Mode
   view3D: boolean;
   setView3D: (v: boolean) => void;
   toggle3D: () => void;
@@ -147,7 +135,6 @@ export const useFightStore = create<FightState>((set, get) => {
   const redTabular = new FightAgent(0.3, 0.2, 0.9);
   const blueTabular = new FightAgent(0.3, 0.2, 0.9);
 
-  // Pre-seed DQN and Tabular agents with expert sparring demonstrations on startup
   try {
     warmStartDQNAgent(dqnAgent, 35);
     warmStartAgent(redTabular, 100);
@@ -187,6 +174,7 @@ export const useFightStore = create<FightState>((set, get) => {
     lastBlueQValues: [0, 0, 0, 0, 0, 0],
     lastRedAction: 'idle',
     lastBlueAction: 'idle',
+    queuedHumanAction: null,
 
     epsilon: 0.2,
     alpha: 0.2,
@@ -233,7 +221,7 @@ export const useFightStore = create<FightState>((set, get) => {
           mode,
           redPolicy: 'dqn',
           bluePolicy: 'tabular',
-          speed: 50,
+          speed: 20,
           isShowtime: false,
           maxSteps: 600,
         });
@@ -241,11 +229,11 @@ export const useFightStore = create<FightState>((set, get) => {
         globalKeyboardController.detach();
         set({
           mode,
-          redPolicy: 'tabular',
-          bluePolicy: 'tabular',
+          redPolicy: 'dqn',
+          bluePolicy: 'expert',
           speed: 1,
           isShowtime: true,
-          maxSteps: 1500,
+          maxSteps: 1200,
         });
       }
     },
@@ -257,8 +245,17 @@ export const useFightStore = create<FightState>((set, get) => {
     },
 
     setBluePolicy: (p) => {
-      if (p === 'human') return; // Blue is strictly AI in Robo-Dojo lab
+      if (p === 'human') return;
       set({ bluePolicy: p });
+    },
+
+    dispatchHumanAction: (action) => {
+      const state = get();
+      if (state.runState !== 'running') {
+        set({ runState: 'running', queuedHumanAction: action });
+      } else {
+        set({ queuedHumanAction: action });
+      }
     },
 
     step: () => {
@@ -287,9 +284,9 @@ export const useFightStore = create<FightState>((set, get) => {
         dqnEpisodeRewards,
         dqnRecentWins,
         dqnLossHistory,
+        queuedHumanAction,
       } = state;
 
-      // Handle round end banner delay
       if (announceTimer > 0) {
         set({ announceTimer: announceTimer - 1 });
         if (announceTimer <= 1) {
@@ -313,7 +310,12 @@ export const useFightStore = create<FightState>((set, get) => {
       const redDiscState = discretizeState(red, blue);
 
       if (redPolicy === 'human') {
-        redAction = globalKeyboardController.getAction(red, blue);
+        if (queuedHumanAction) {
+          redAction = queuedHumanAction;
+          set({ queuedHumanAction: null });
+        } else {
+          redAction = globalKeyboardController.getAction(red, blue);
+        }
       } else if (redPolicy === 'dqn') {
         const isGreedy = mode === 'dojo' || mode === 'eval';
         const dqnDecision = dqnAgent.chooseAction(redObs, isGreedy, red, blue);
@@ -350,7 +352,6 @@ export const useFightStore = create<FightState>((set, get) => {
         blueQVals = [0, 1, 2, 3, 4, 5].map((a) => blueTabularAgent.getQ(blueDiscState, a));
       }
 
-      // Update state telemetry for real-time live inspect
       state.lastRedQValues = redQVals;
       state.lastBlueQValues = blueQVals;
       state.lastRedAction = redAction;
@@ -364,14 +365,14 @@ export const useFightStore = create<FightState>((set, get) => {
         const newRedDiscState = discretizeState(red, blue);
         const redActionIdx = ACTIONS.indexOf(redAction as any);
         if (redActionIdx >= 0) {
-          redTabularAgent.update(redDiscState, redActionIdx, result.redReward, newRedDiscState, result.roundOver);
+          redTabularAgent.update(redDiscState, redActionIdx, result.redReward, newRedDiscState, result.roundOver, red, blue);
         }
       }
       if (bluePolicy === 'tabular') {
         const newBlueDiscState = discretizeState(blue, red);
         const blueActionIdx = ACTIONS.indexOf(blueAction as any);
         if (blueActionIdx >= 0) {
-          blueTabularAgent.update(blueDiscState, blueActionIdx, result.blueReward, newBlueDiscState, result.roundOver);
+          blueTabularAgent.update(blueDiscState, blueActionIdx, result.blueReward, newBlueDiscState, result.roundOver, blue, red);
         }
       }
 
@@ -380,10 +381,10 @@ export const useFightStore = create<FightState>((set, get) => {
         const newRedObs = extractObservation(red, blue);
         const redActionIdx = ACTIONS.indexOf(redAction as any);
         if (redActionIdx >= 0) {
-          dqnAgent.storeTransition(redObs, redActionIdx, result.redReward, newRedObs, result.roundOver);
+          dqnAgent.storeTransition(redObs, redActionIdx, result.redReward, newRedObs, result.roundOver, red, blue);
         }
 
-        if (mode === 'train' || state.isTrainingActive) {
+        if (true) {
           const trainRes = dqnAgent.trainStep();
           if (trainRes && trainRes.loss > 0) {
             dqnLossHistory.push(trainRes.loss);
@@ -394,10 +395,10 @@ export const useFightStore = create<FightState>((set, get) => {
         const newBlueObs = extractObservation(blue, red);
         const blueActionIdx = ACTIONS.indexOf(blueAction as any);
         if (blueActionIdx >= 0) {
-          dqnAgent.storeTransition(blueObs, blueActionIdx, result.blueReward, newBlueObs, result.roundOver);
+          dqnAgent.storeTransition(blueObs, blueActionIdx, result.blueReward, newBlueObs, result.roundOver, blue, red);
         }
 
-        if (mode === 'train' || state.isTrainingActive) {
+        if (true) {
           const trainRes = dqnAgent.trainStep();
           if (trainRes && trainRes.loss > 0) {
             dqnLossHistory.push(trainRes.loss);
@@ -439,7 +440,6 @@ export const useFightStore = create<FightState>((set, get) => {
         };
       }
 
-      // Handle match timeout by comparing remaining HP (higher HP wins!)
       if (newStepCount >= maxSteps && !result.roundOver) {
         if (red.hp > blue.hp) {
           winner = 'red';
@@ -451,9 +451,7 @@ export const useFightStore = create<FightState>((set, get) => {
         roundOver = true;
       }
 
-      // 6. Handle Round Conclusion
       if (roundOver) {
-        // Decay DQN exploration at episode boundary
         if (redPolicy === 'dqn' || bluePolicy === 'dqn') {
           dqnAgent.decayEpsilon();
           const dqnReward = redPolicy === 'dqn' ? red.roundReward : blue.roundReward;
@@ -481,7 +479,7 @@ export const useFightStore = create<FightState>((set, get) => {
           draws: draws + (winner === 'draw' ? 1 : 0),
           roundRewards: [...roundRewards, { red: red.roundReward, blue: blue.roundReward }],
           lastWinner: winner,
-          announceTimer: mode === 'dojo' ? 55 : isShowtime ? 65 : 12,
+          announceTimer: mode === 'dojo' ? 25 : isShowtime ? 28 : 6,
           lastRedQValues: redQVals,
           lastBlueQValues: blueQVals,
           lastRedAction: redAction,
@@ -491,7 +489,6 @@ export const useFightStore = create<FightState>((set, get) => {
           dqnLossHistory: [...dqnLossHistory],
         });
 
-        // Persist model weights and scores after round completion
         get().saveToPersistence();
       } else {
         set({
@@ -623,7 +620,7 @@ export const useFightStore = create<FightState>((set, get) => {
       });
     },
 
-    runBenchmark: (targetRounds = 40) => {
+    runBenchmark: (targetRounds = 40, opponentPolicy: FighterPolicy = 'tabular') => {
       const { dqnAgent, redTabularAgent } = get();
       const red = createFighter(150, 1);
       const blue = createFighter(ARENA_WIDTH - 150, -1);
@@ -636,31 +633,48 @@ export const useFightStore = create<FightState>((set, get) => {
       for (let ep = 0; ep < targetRounds; ep++) {
         resetRound(red, blue);
         let s = 0;
+        let resolvedWinner: 'red' | 'blue' | 'draw' | null = null;
+
         while (s < 500) {
           const redObs = extractObservation(red, blue);
           const redAction = dqnAgent.chooseAction(redObs, true, red, blue).action;
 
-          const blueDisc = discretizeState(blue, red);
-          const blueAction = redTabularAgent.chooseAction(blueDisc);
+          let blueAction: Action;
+          if (opponentPolicy === 'expert') {
+            blueAction = expertAction(blue, red);
+          } else {
+            const blueDisc = discretizeState(blue, red);
+            blueAction = redTabularAgent.chooseAction(blueDisc, blue, red);
+          }
 
           const res = stepArena(red, blue, redAction, blueAction);
           s++;
           if (res.roundOver) {
-            if (res.winner === 'red') rWins++;
-            else if (res.winner === 'blue') bWins++;
-            else dr++;
-            totalRedHp += red.hp;
-            totalBlueHp += blue.hp;
+            resolvedWinner = res.winner;
             break;
           }
         }
+
+        // Fixed timeout evaluation bug: resolve winner by remaining HP if 500-step limit reached
+        if (!resolvedWinner) {
+          if (red.hp > blue.hp) resolvedWinner = 'red';
+          else if (blue.hp > red.hp) resolvedWinner = 'blue';
+          else resolvedWinner = 'draw';
+        }
+
+        if (resolvedWinner === 'red') rWins++;
+        else if (resolvedWinner === 'blue') bWins++;
+        else dr++;
+
+        totalRedHp += red.hp;
+        totalBlueHp += blue.hp;
       }
 
       set({
         evalResults: {
           totalRounds: targetRounds,
           redPolicy: 'dqn',
-          bluePolicy: 'tabular',
+          bluePolicy: opponentPolicy,
           redWins: rWins,
           blueWins: bWins,
           draws: dr,
@@ -769,11 +783,9 @@ export const useFightStore = create<FightState>((set, get) => {
   };
 });
 
-// Auto-restore saved DQN agent on app load
 if (typeof window !== 'undefined') {
   useFightStore.getState().loadFromPersistence();
   window.addEventListener('beforeunload', () => {
     useFightStore.getState().saveToPersistence();
   });
 }
-

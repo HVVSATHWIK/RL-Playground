@@ -4,7 +4,9 @@ import {
   createFighter,
   ARENA_WIDTH,
   ARENA_DEPTH,
+  FLOOR_Y,
   ROBOT_WIDTH,
+  ROBOT_HEIGHT,
   MOVE_SPEED,
   DODGE_SPEED,
   PUNCH_RANGE,
@@ -17,7 +19,9 @@ import {
   BLOCK_DURATION,
   DODGE_COOLDOWN,
   STUN_DURATION,
+  MAX_STAMINA,
   KNOCKBACK,
+  GRAVITY,
 } from './fighter';
 
 export interface StepResult {
@@ -36,199 +40,225 @@ export interface StepResult {
 }
 
 export interface RewardWeights {
-  aggression: number; // multiplier for damage dealt (+10/+15)
-  survival: number;   // multiplier for damage taken and round defeat
-  defense: number;    // multiplier for tactical blocks (+8) and evasive dodges (+5)
-  spacing: number;    // multiplier for closing distance and 3D positioning
-  winBonus: number;   // multiplier for KO win (+100)
+  aggression: number;
+  survival: number;
+  defense: number;
+  spacing: number;
+  winBonus: number;
 }
 
 export const DEFAULT_REWARD_WEIGHTS: RewardWeights = {
-  aggression: 1.2,
+  aggression: 1.5,
   survival: 1.2,
-  defense: 1.8, // High positive reward for tactical defense
-  spacing: 1.0,
-  winBonus: 1.2,
+  defense: 1.2,
+  spacing: 1.4,
+  winBonus: 1.5,
 };
 
-// Resolves attack damage in full 3D spatial geometry considering blocking and evasion actions
-function resolveSimultaneous(
-  red: FighterState,
-  blue: FighterState,
-  redAction: Action,
-  blueAction: Action
-): { redDamage: number; blueDamage: number; redBlocked: boolean; blueBlocked: boolean; redEvaded: boolean; blueEvaded: boolean } {
-  const redWillBlock = redAction === 'block' && red.animState !== 'stunned';
-  const blueWillBlock = blueAction === 'block' && blue.animState !== 'stunned';
+const SOLID_SEPARATION = 44;
 
-  // Dodge grants full invulnerability evasion during active dodge window or when initiating valid dodge
-  const redCanDodge = (redAction === 'dodge' && red.cooldown <= 0) || red.animState === 'dodging';
-  const redWillDodge = redCanDodge && red.animState !== 'stunned';
-
-  const blueCanDodge = (blueAction === 'dodge' && blue.cooldown <= 0) || blue.animState === 'dodging';
-  const blueWillDodge = blueCanDodge && blue.animState !== 'stunned';
-
-  // 3D Euclidean distance calculation
-  const dx = blue.x - red.x;
-  const dz = blue.z - red.z;
-  const dist = Math.sqrt(dx * dx + dz * dz);
-
-  let redDamage = 0;
-  let redBlocked = false;
-  let blueEvaded = false;
-
-  // Check red's attack against blue
-  if ((redAction === 'punch' || redAction === 'kick') && red.cooldown <= 0 && red.animState !== 'stunned') {
-    const range = redAction === 'punch' ? PUNCH_RANGE : KICK_RANGE;
-    if (dist <= range) {
-      if (blueWillDodge) {
-        // Blue cleanly evades the strike with full I-frames!
-        redDamage = 0;
-        blueEvaded = true;
-      } else if (blue.isBlocking || blueWillBlock) {
-        redDamage = Math.max(1, Math.round((redAction === 'punch' ? PUNCH_DAMAGE : KICK_DAMAGE) * (1 - BLOCK_REDUCTION)));
-        redBlocked = true;
-      } else {
-        redDamage = redAction === 'punch' ? PUNCH_DAMAGE : KICK_DAMAGE;
-      }
-    }
-  }
-
-  let blueDamage = 0;
-  let blueBlocked = false;
-  let redEvaded = false;
-
-  // Check blue's attack against red
-  if ((blueAction === 'punch' || blueAction === 'kick') && blue.cooldown <= 0 && blue.animState !== 'stunned') {
-    const range = blueAction === 'punch' ? PUNCH_RANGE : KICK_RANGE;
-    if (dist <= range) {
-      if (redWillDodge) {
-        // Red cleanly evades the strike with full I-frames!
-        blueDamage = 0;
-        redEvaded = true;
-      } else if (red.isBlocking || redWillBlock) {
-        blueDamage = Math.max(1, Math.round((blueAction === 'punch' ? PUNCH_DAMAGE : KICK_DAMAGE) * (1 - BLOCK_REDUCTION)));
-        blueBlocked = true;
-      } else {
-        blueDamage = blueAction === 'punch' ? PUNCH_DAMAGE : KICK_DAMAGE;
-      }
-    }
-  }
-
-  return { redDamage, blueDamage, redBlocked, blueBlocked, redEvaded, blueEvaded };
-}
-
-// Applies state updates, animation counters, cooldowns, and full 3D spatial movement
-function applyState(fighter: FighterState, action: Action, opponent: FighterState) {
-  fighter.lastAction = action;
-
-  // Decrease timers
-  if (fighter.animTimer > 0) fighter.animTimer--;
-  if (fighter.cooldown > 0) fighter.cooldown--;
-  if (fighter.hitFlash > 0) fighter.hitFlash--;
-
-  // Age floating damage numbers and evasion notifications
-  fighter.damageNumbers = fighter.damageNumbers
-    .map((d) => ({ ...d, age: d.age + 1, y: d.y - 1.4 }))
-    .filter((d) => d.age < 35);
-
+function clampArena(fighter: FighterState) {
   const minX = ROBOT_WIDTH / 2;
   const maxX = ARENA_WIDTH - ROBOT_WIDTH / 2;
   const minZ = -ARENA_DEPTH / 2;
   const maxZ = ARENA_DEPTH / 2;
+  fighter.x = Math.max(minX, Math.min(maxX, fighter.x));
+  fighter.z = Math.max(minZ, Math.min(maxZ, fighter.z));
+  if (fighter.y < 0) {
+    fighter.y = 0;
+    fighter.vy = 0;
+  }
+}
+
+function enforceSolidSeparation(red: FighterState, blue: FighterState) {
+  const minX = ROBOT_WIDTH / 2;
+  const maxX = ARENA_WIDTH - ROBOT_WIDTH / 2;
+  const currentGap = Math.abs(blue.x - red.x);
+  if (currentGap >= SOLID_SEPARATION) return;
+
+  if (red.x <= blue.x) {
+    const mid = (red.x + blue.x) / 2;
+    let newRedX = mid - SOLID_SEPARATION / 2;
+    let newBlueX = mid + SOLID_SEPARATION / 2;
+    if (newRedX < minX) {
+      newRedX = minX;
+      newBlueX = minX + SOLID_SEPARATION;
+    } else if (newBlueX > maxX) {
+      newBlueX = maxX;
+      newRedX = maxX - SOLID_SEPARATION;
+    }
+    red.x = newRedX;
+    blue.x = newBlueX;
+  } else {
+    const mid = (red.x + blue.x) / 2;
+    let newBlueX = mid - SOLID_SEPARATION / 2;
+    let newRedX = mid + SOLID_SEPARATION / 2;
+    if (newBlueX < minX) {
+      newBlueX = minX;
+      newRedX = minX + SOLID_SEPARATION;
+    } else if (newRedX > maxX) {
+      newRedX = maxX;
+      newBlueX = maxX - SOLID_SEPARATION;
+    }
+    blue.x = newBlueX;
+    red.x = newRedX;
+  }
+}
+
+// Applies movement, attack lunge, cooldowns, and animations BEFORE hit detection
+function applyStateAndMovement(fighter: FighterState, action: Action, opponent: FighterState): {
+  initiatedAttack: 'punch' | 'kick' | null;
+  initiatedDodge: boolean;
+} {
+  fighter.lastAction = action;
+
+  if (fighter.animTimer > 0) fighter.animTimer--;
+  if (fighter.cooldown > 0) fighter.cooldown--;
+  if ((fighter.dodgeCooldown || 0) > 0) fighter.dodgeCooldown!--;
+  if ((fighter.dodgeTimer || 0) > 0) fighter.dodgeTimer!--;
+  if (fighter.hitFlash > 0) fighter.hitFlash--;
+
+  fighter.damageNumbers = fighter.damageNumbers
+    .map((d) => ({ ...d, age: d.age + 1, y: d.y - 1.4 }))
+    .filter((d) => d.age < 36);
+
+  if (fighter.y > 0 || fighter.vy !== 0) {
+    fighter.y += fighter.vy;
+    fighter.vy -= GRAVITY;
+    if (fighter.y <= 0) {
+      fighter.y = 0;
+      fighter.vy = 0;
+    }
+  }
+
+  // Natural Z-lane return so fighters don't drift out of Z alignment
+  fighter.z *= 0.88;
+  if (Math.abs(fighter.z) < 0.5) fighter.z = 0;
+
+  if (action === 'idle' || action === 'moveLeft' || action === 'moveRight') {
+    fighter.stamina = Math.min(MAX_STAMINA, (fighter.stamina ?? MAX_STAMINA) + 1.6);
+  } else if (action === 'block') {
+    fighter.stamina = Math.min(MAX_STAMINA, (fighter.stamina ?? MAX_STAMINA) + 0.3);
+  }
 
   const dx = opponent.x - fighter.x;
-  const dz = opponent.z - fighter.z;
-  const dist = Math.sqrt(dx * dx + dz * dz) || 1;
+  const dirToOpp = dx >= 0 ? 1 : -1;
+  const absDx = Math.abs(dx);
 
-  // Decelerating momentum glide during active evasive dodge animation
-  if (fighter.animState === 'dodging' && fighter.animTimer > 0) {
-    const glideRatio = fighter.animTimer / 10;
-    const glideX = (dx / dist) * (glideRatio * 3.2);
-    const glideZ = (dz / dist) * (glideRatio * 1.8);
-    fighter.x = Math.max(minX, Math.min(maxX, fighter.x - glideX));
-    fighter.z = Math.max(minZ, Math.min(maxZ, fighter.z - glideZ));
-  }
-
-  // Stun logic: while stunned, cannot perform actions
   if (fighter.animState === 'stunned') {
-    if (fighter.animTimer <= 0) fighter.animState = 'idle';
-    fighter.consecutiveAttacks = 0;
-    return;
+    if (fighter.animTimer <= 0) {
+      fighter.animState = 'idle';
+    } else {
+      fighter.consecutiveAttacks = 0;
+      fighter.isBlocking = false;
+      clampArena(fighter);
+      return { initiatedAttack: null, initiatedDodge: false };
+    }
   }
 
-  // Reset anim state if timer expired
   if (fighter.animTimer <= 0 && fighter.animState !== 'idle') {
     fighter.animState = 'idle';
   }
 
   fighter.isBlocking = false;
+  let initiatedAttack: 'punch' | 'kick' | null = null;
+  let initiatedDodge = false;
 
   switch (action) {
     case 'moveLeft':
       fighter.consecutiveAttacks = 0;
+      fighter.consecutiveBlocks = 0;
       if (fighter.x > opponent.x) {
-        // Moving left towards opponent: stop at solid collision boundary
-        fighter.x = Math.max(opponent.x + 52, fighter.x - MOVE_SPEED);
+        fighter.x = Math.max(opponent.x + SOLID_SEPARATION, fighter.x - MOVE_SPEED);
       } else {
-        fighter.x = Math.max(minX, fighter.x - MOVE_SPEED);
+        fighter.x = fighter.x - MOVE_SPEED;
       }
       break;
 
     case 'moveRight':
       fighter.consecutiveAttacks = 0;
+      fighter.consecutiveBlocks = 0;
       if (fighter.x < opponent.x) {
-        // Moving right towards opponent: stop at solid collision boundary
-        fighter.x = Math.min(opponent.x - 52, fighter.x + MOVE_SPEED);
+        fighter.x = Math.min(opponent.x - SOLID_SEPARATION, fighter.x + MOVE_SPEED);
       } else {
-        fighter.x = Math.min(maxX, fighter.x + MOVE_SPEED);
+        fighter.x = fighter.x + MOVE_SPEED;
       }
       break;
 
     case 'punch':
+      fighter.consecutiveBlocks = 0;
       if (fighter.cooldown <= 0) {
+        // Combat step-in lunge so attacks connect crisply
+        if (absDx > SOLID_SEPARATION && absDx <= PUNCH_RANGE + 28) {
+          fighter.x += dirToOpp * Math.min(12, absDx - SOLID_SEPARATION);
+        }
         fighter.animState = 'punching';
         fighter.animTimer = 5;
         fighter.cooldown = PUNCH_COOLDOWN;
         fighter.consecutiveAttacks = (fighter.consecutiveAttacks || 0) + 1;
+        fighter.strikeHand = ((fighter.strikeHand || 0) === 0 ? 1 : 0) as 0 | 1;
+        fighter.stamina = Math.max(0, (fighter.stamina ?? MAX_STAMINA) - 8);
+        initiatedAttack = 'punch';
       }
       break;
 
     case 'kick':
+      fighter.consecutiveBlocks = 0;
       if (fighter.cooldown <= 0) {
+        if (absDx > SOLID_SEPARATION && absDx <= KICK_RANGE + 32) {
+          fighter.x += dirToOpp * Math.min(15, absDx - SOLID_SEPARATION);
+        }
         fighter.animState = 'kicking';
         fighter.animTimer = 7;
         fighter.cooldown = KICK_COOLDOWN;
         fighter.consecutiveAttacks = (fighter.consecutiveAttacks || 0) + 1;
+        fighter.stamina = Math.max(0, (fighter.stamina ?? MAX_STAMINA) - 12);
+        if (fighter.y === 0) {
+          fighter.vy = 4.6;
+          fighter.y = 2.0;
+        }
+        initiatedAttack = 'kick';
       }
       break;
 
     case 'block':
+      fighter.consecutiveAttacks = 0;
+      fighter.consecutiveBlocks = (fighter.consecutiveBlocks || 0) + 1;
       fighter.isBlocking = true;
       fighter.animState = 'blocking';
       fighter.animTimer = BLOCK_DURATION;
-      fighter.consecutiveAttacks = 0;
       break;
 
     case 'dodge':
-      if (fighter.cooldown <= 0) {
+      fighter.consecutiveBlocks = 0;
+      if ((fighter.dodgeCooldown || 0) <= 0) {
         fighter.animState = 'dodging';
-        fighter.animTimer = 10;
-        fighter.cooldown = DODGE_COOLDOWN;
+        fighter.animTimer = 9;
+        fighter.dodgeTimer = 9;
+        fighter.dodgeCooldown = 6;
         fighter.consecutiveAttacks = 0;
-        // Agile initial evasive leap away from opponent
-        const pushX = (dx / dist) * DODGE_SPEED;
-        const pushZ = (dz / dist) * (DODGE_SPEED * 0.6);
-        fighter.x = Math.max(minX, Math.min(maxX, fighter.x - pushX));
-        fighter.z = Math.max(minZ, Math.min(maxZ, fighter.z - pushZ));
+        fighter.stamina = Math.max(0, (fighter.stamina ?? MAX_STAMINA) - 14);
+        const sideDir = (fighter.sidestepDir || 1) as 1 | -1;
+        fighter.sidestepDir = (sideDir === 1 ? -1 : 1) as 1 | -1;
+        fighter.x -= dirToOpp * DODGE_SPEED;
+        fighter.z += sideDir * 28;
+        if (fighter.y === 0) {
+          fighter.vy = 4.8;
+          fighter.y = 2.2;
+        }
+        initiatedDodge = true;
       }
       break;
 
     case 'idle':
     default:
       fighter.consecutiveAttacks = 0;
+      fighter.consecutiveBlocks = 0;
       break;
   }
+
+  clampArena(fighter);
+  return { initiatedAttack, initiatedDodge };
 }
 
 export function stepArena(
@@ -238,7 +268,6 @@ export function stepArena(
   blueAction: Action,
   rewardWeights: RewardWeights = DEFAULT_REWARD_WEIGHTS
 ): StepResult {
-  // Dynamic 3D facing orientation
   if (red.x < blue.x) {
     red.facing = 1;
     blue.facing = -1;
@@ -247,125 +276,198 @@ export function stepArena(
     blue.facing = 1;
   }
 
-  // Small baseline engagement reward
-  let redReward = -0.02 * rewardWeights.spacing;
-  let blueReward = -0.02 * rewardWeights.spacing;
+  const prevDist = Math.abs(blue.x - red.x);
 
-  // Phase 1: Simultaneous 3D damage resolution
-  const { redDamage, blueDamage, redBlocked, blueBlocked, redEvaded, blueEvaded } = resolveSimultaneous(
-    red,
-    blue,
-    redAction,
-    blueAction
-  );
+  // Phase 1: Movement & Attack Initiation (with forward strike lunge)
+  const redMove = applyStateAndMovement(red, redAction, blue);
+  const blueMove = applyStateAndMovement(blue, blueAction, red);
 
-  // Phase 2: Movement & state update
-  applyState(red, redAction, blue);
-  applyState(blue, blueAction, red);
+  enforceSolidSeparation(red, blue);
 
-  // Maintain strict solid-body non-overlapping separation in 3D arena space
-  const solidSeparation = 52;
-  if (red.x <= blue.x) {
-    if (red.x > blue.x - solidSeparation) {
-      const mid = (red.x + blue.x) / 2;
-      red.x = Math.max(ROBOT_WIDTH / 2, mid - solidSeparation / 2);
-      blue.x = Math.min(ARENA_WIDTH - ROBOT_WIDTH / 2, mid + solidSeparation / 2);
+  // Compute effective combat distance (weighted primarily by X separation so minor Z sidesteps don't break punches)
+  const dx = blue.x - red.x;
+  const dz = (blue.z - red.z) * 0.35;
+  const distNow = Math.sqrt(dx * dx + dz * dz);
+
+  // Continuous shaping reward for closing distance vs stalling far away
+  const potPrevR = -Math.abs(prevDist - 72) / 140;
+  const potNextR = -Math.abs(distNow - 72) / 140;
+  let redReward = (0.95 * potNextR - potPrevR) * 2.4 * weights.spacing - 0.03;
+  let blueReward = (0.95 * potNextR - potPrevR) * 2.4 * weights.spacing - 0.03;
+  if (redMove.initiatedAttack && distNow > KICK_RANGE + 5) redReward -= 1.25 * weights.spacing;
+  if (blueMove.initiatedAttack && distNow > KICK_RANGE + 5) blueReward -= 1.25 * weights.spacing;
+
+  const newDist = Math.abs(blue.x - red.x);
+  if (prevDist > KICK_RANGE) {
+    // Reward whoever actively closed the gap
+    if (redAction === (red.x < blue.x ? 'moveRight' : 'moveLeft')) {
+      redReward += 0.35 * rewardWeights.spacing;
     }
-  } else {
-    if (blue.x > red.x - solidSeparation) {
-      const mid = (red.x + blue.x) / 2;
-      blue.x = Math.max(ROBOT_WIDTH / 2, mid - solidSeparation / 2);
-      red.x = Math.min(ARENA_WIDTH - ROBOT_WIDTH / 2, mid + solidSeparation / 2);
+    if (blueAction === (blue.x < red.x ? 'moveRight' : 'moveLeft')) {
+      blueReward += 0.35 * rewardWeights.spacing;
+    }
+  } else if (newDist <= KICK_RANGE) {
+    redReward += 0.12 * rewardWeights.spacing;
+    blueReward += 0.12 * rewardWeights.spacing;
+  }
+
+  // Penalize useless blocking when opponent is not attacking or out of range
+  const redAttacking = redMove.initiatedAttack !== null;
+  const blueAttacking = blueMove.initiatedAttack !== null;
+  if (redAction === 'block' && (!blueAttacking || distNow > KICK_RANGE + 15)) {
+    redReward -= 0.45 * rewardWeights.defense;
+  }
+  if (blueAction === 'block' && (!redAttacking || distNow > KICK_RANGE + 15)) {
+    blueReward -= 0.45 * rewardWeights.defense;
+  }
+
+  // Phase 2: Resolve Strike Hits & Damage
+  let redDamage = 0;
+  let redBlocked = false;
+  let blueEvaded = false;
+  let blueGuardBroken = false;
+
+  if (redMove.initiatedAttack) {
+    const range = redMove.initiatedAttack === 'punch' ? PUNCH_RANGE : KICK_RANGE;
+    if (distNow <= range) {
+      if (blueMove.initiatedDodge || (blue.dodgeTimer || 0) > 0 || blue.animState === 'dodging' || blueAction === 'dodge') {
+        redDamage = 0;
+        blueEvaded = true;
+      } else if (blue.isBlocking) {
+        const raw = redMove.initiatedAttack === 'punch' ? PUNCH_DAMAGE : KICK_DAMAGE;
+        if (redMove.initiatedAttack === 'kick' && (blue.stamina < 25 || (blue.consecutiveBlocks || 0) >= 3)) {
+          // Guard Break! Kick shatters passive block
+          redDamage = raw;
+          blueGuardBroken = true;
+          redBlocked = false;
+        } else {
+          redDamage = Math.max(3, Math.round(raw * (1 - BLOCK_REDUCTION)));
+          redBlocked = true;
+          blue.stamina = Math.max(0, blue.stamina - 16);
+        }
+      } else {
+        redDamage = redMove.initiatedAttack === 'punch' ? PUNCH_DAMAGE : KICK_DAMAGE;
+      }
     }
   }
 
-  const dx = blue.x - red.x;
-  const dz = blue.z - red.z;
-  const distNow = Math.sqrt(dx * dx + dz * dz) || 0.001;
+  let blueDamage = 0;
+  let blueBlocked = false;
+  let redEvaded = false;
+  let redGuardBroken = false;
 
-  // Phase 3: Apply damage, 3D knockback, stun, and balanced defensive reward shaping
+  if (blueMove.initiatedAttack) {
+    const range = blueMove.initiatedAttack === 'punch' ? PUNCH_RANGE : KICK_RANGE;
+    if (distNow <= range) {
+      if (redMove.initiatedDodge || (red.dodgeTimer || 0) > 0 || red.animState === 'dodging' || redAction === 'dodge') {
+        blueDamage = 0;
+        redEvaded = true;
+      } else if (red.isBlocking) {
+        const raw = blueMove.initiatedAttack === 'punch' ? PUNCH_DAMAGE : KICK_DAMAGE;
+        if (blueMove.initiatedAttack === 'kick' && (red.stamina < 25 || (red.consecutiveBlocks || 0) >= 3)) {
+          blueDamage = raw;
+          redGuardBroken = true;
+          blueBlocked = false;
+        } else {
+          blueDamage = Math.max(3, Math.round(raw * (1 - BLOCK_REDUCTION)));
+          blueBlocked = true;
+          red.stamina = Math.max(0, red.stamina - 16);
+        }
+      } else {
+        blueDamage = blueMove.initiatedAttack === 'punch' ? PUNCH_DAMAGE : KICK_DAMAGE;
+      }
+    }
+  }
+
+  const baseIndicatorY = FLOOR_Y - ROBOT_HEIGHT - 16;
+  const dirX = dx >= 0 ? 1 : -1;
+
+  // Phase 3: Apply HP Reduction, Knockback, Hit Stun & RL Rewards
   if (redDamage > 0) {
     blue.hp = Math.max(0, blue.hp - redDamage);
-    blue.hitFlash = 4;
-    blue.damageNumbers.push({ value: redDamage, x: blue.x, y: blue.x - 30, age: 0 });
+    blue.hitFlash = 5;
+    const isCrit = redDamage >= KICK_DAMAGE;
+    blue.damageNumbers.push({
+      value: redDamage,
+      x: blue.x,
+      y: baseIndicatorY,
+      age: 0,
+      isCrit,
+      isBlocked: redBlocked,
+      label: blueGuardBroken
+        ? `GUARD BREAK -${redDamage}!`
+        : redBlocked
+        ? `BLOCKED -${redDamage}`
+        : isCrit
+        ? `KICK -${redDamage}!`
+        : `-${redDamage} HP`,
+    });
 
-    // 3D Knockback along impact vector
-    const normX = dx / distNow;
-    const normZ = dz / distNow;
-    blue.x = Math.max(ROBOT_WIDTH / 2, Math.min(ARENA_WIDTH - ROBOT_WIDTH / 2, blue.x + normX * KNOCKBACK));
-    blue.z = Math.max(-ARENA_DEPTH / 2, Math.min(ARENA_DEPTH / 2, blue.z + normZ * KNOCKBACK));
+    const kb = redBlocked ? KNOCKBACK * 0.4 : isCrit ? KNOCKBACK * 1.2 : KNOCKBACK;
+    blue.x += dirX * kb;
+    clampArena(blue);
 
-    if (!blue.isBlocking) {
+    if (!blue.isBlocking || blueGuardBroken) {
+      blue.isBlocking = false;
       blue.animState = 'stunned';
-      blue.animTimer = STUN_DURATION;
+      blue.animTimer = blueGuardBroken ? STUN_DURATION + 3 : STUN_DURATION;
     }
 
-    const baseAttacker = redBlocked ? 4 : redDamage >= KICK_DAMAGE ? 15 : 10;
-    const baseDefender = redBlocked ? 2 : redDamage >= KICK_DAMAGE ? 15 : 10;
-    redReward += baseAttacker * rewardWeights.aggression;
-    blueReward -= baseDefender * rewardWeights.survival;
-
-    // Tactical defense reward for blocking
+    redReward += redDamage * 1.2 * rewardWeights.aggression;
+    blueReward -= redDamage * 1.0 * rewardWeights.survival;
     if (redBlocked) {
-      blueReward += 8 * rewardWeights.defense;
+      blueReward += 4 * rewardWeights.defense;
     }
   }
 
   if (blueDamage > 0) {
     red.hp = Math.max(0, red.hp - blueDamage);
-    red.hitFlash = 4;
-    red.damageNumbers.push({ value: blueDamage, x: red.x, y: red.x - 30, age: 0 });
+    red.hitFlash = 5;
+    const isCrit = blueDamage >= KICK_DAMAGE;
+    red.damageNumbers.push({
+      value: blueDamage,
+      x: red.x,
+      y: baseIndicatorY,
+      age: 0,
+      isCrit,
+      isBlocked: blueBlocked,
+      label: redGuardBroken
+        ? `GUARD BREAK -${blueDamage}!`
+        : blueBlocked
+        ? `BLOCKED -${blueDamage}`
+        : isCrit
+        ? `KICK -${blueDamage}!`
+        : `-${blueDamage} HP`,
+    });
 
-    // 3D Knockback along impact vector
-    const normX = dx / distNow;
-    const normZ = dz / distNow;
-    red.x = Math.max(ROBOT_WIDTH / 2, Math.min(ARENA_WIDTH - ROBOT_WIDTH / 2, red.x - normX * KNOCKBACK));
-    red.z = Math.max(-ARENA_DEPTH / 2, Math.min(ARENA_DEPTH / 2, red.z - normZ * KNOCKBACK));
+    const kb = blueBlocked ? KNOCKBACK * 0.4 : isCrit ? KNOCKBACK * 1.2 : KNOCKBACK;
+    red.x -= dirX * kb;
+    clampArena(red);
 
-    if (!red.isBlocking) {
+    if (!red.isBlocking || redGuardBroken) {
+      red.isBlocking = false;
       red.animState = 'stunned';
-      red.animTimer = STUN_DURATION;
+      red.animTimer = redGuardBroken ? STUN_DURATION + 3 : STUN_DURATION;
     }
 
-    const baseAttacker = blueBlocked ? 4 : blueDamage >= KICK_DAMAGE ? 15 : 10;
-    const baseDefender = blueBlocked ? 2 : blueDamage >= KICK_DAMAGE ? 15 : 10;
-    blueReward += baseAttacker * rewardWeights.aggression;
-    redReward -= baseDefender * rewardWeights.survival;
-
-    // Tactical defense reward for blocking
+    blueReward += blueDamage * 1.2 * rewardWeights.aggression;
+    redReward -= blueDamage * 1.0 * rewardWeights.survival;
     if (blueBlocked) {
-      redReward += 8 * rewardWeights.defense;
+      redReward += 4 * rewardWeights.defense;
     }
   }
 
-  // Tactical reward for successful evasive dodge against an incoming attack
+  enforceSolidSeparation(red, blue);
+
   if (redEvaded) {
-    redReward += 10 * rewardWeights.defense;
-    red.damageNumbers.push({ value: 0, x: red.x, y: 260, age: 0, isEvade: true, label: 'EVADED!' });
+    redReward += 8 * rewardWeights.defense;
+    red.damageNumbers.push({ value: 0, x: red.x, y: baseIndicatorY, age: 0, isEvade: true, label: 'EVADED' });
   }
   if (blueEvaded) {
-    blueReward += 10 * rewardWeights.defense;
-    blue.damageNumbers.push({ value: 0, x: blue.x, y: 260, age: 0, isEvade: true, label: 'EVADED!' });
+    blueReward += 8 * rewardWeights.defense;
+    blue.damageNumbers.push({ value: 0, x: blue.x, y: baseIndicatorY, age: 0, isEvade: true, label: 'EVADED' });
   }
 
-  // Small penalty for passive block spam when opponent is far or idle
-  const blueAttacking = blueAction === 'punch' || blueAction === 'kick';
-  const redAttacking = redAction === 'punch' || redAction === 'kick';
-
-  if (redAction === 'block' && !blueAttacking && distNow > 140) {
-    redReward -= 0.05 * rewardWeights.defense;
-  }
-  if (blueAction === 'block' && !redAttacking && distNow > 140) {
-    blueReward -= 0.05 * rewardWeights.defense;
-  }
-
-  // Spacing incentives: rewarding closing distance when far
-  if (distNow <= KICK_RANGE + 10) {
-    redReward += 0.05 * rewardWeights.spacing;
-    blueReward += 0.05 * rewardWeights.spacing;
-  }
-
-  // Check round end condition (KO)
   let roundOver = false;
   let winner: 'red' | 'blue' | 'draw' | null = null;
 
@@ -375,12 +477,12 @@ export function stepArena(
       winner = 'draw';
     } else if (red.hp <= 0) {
       winner = 'blue';
-      blueReward += 100 * rewardWeights.winBonus;
-      redReward -= 80 * rewardWeights.survival;
+      blueReward += 80 * rewardWeights.winBonus;
+      redReward -= 60 * rewardWeights.survival;
     } else {
       winner = 'red';
-      redReward += 100 * rewardWeights.winBonus;
-      blueReward -= 80 * rewardWeights.survival;
+      redReward += 80 * rewardWeights.winBonus;
+      blueReward -= 60 * rewardWeights.survival;
     }
   }
 
@@ -404,6 +506,6 @@ export function stepArena(
 }
 
 export function resetRound(red: FighterState, blue: FighterState) {
-  Object.assign(red, createFighter(150, 1, 0));
-  Object.assign(blue, createFighter(ARENA_WIDTH - 150, -1, 0));
+  Object.assign(red, createFighter(200, 1, 0));
+  Object.assign(blue, createFighter(ARENA_WIDTH - 200, -1, 0));
 }

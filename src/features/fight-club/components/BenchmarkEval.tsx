@@ -1,18 +1,19 @@
 import { useState } from 'react';
 import { Trophy, Play, BarChart3, CheckCircle2 } from 'lucide-react';
-import { useFightStore } from '../stores/fightStore';
+import { useFightStore, type FighterPolicy } from '../stores/fightStore';
 
 export function BenchmarkEval() {
   const { runBenchmark, evalResults } = useFightStore();
   const [rounds, setRounds] = useState<number>(50);
+  const [opponent, setOpponent] = useState<FighterPolicy>('tabular');
   const [isEvaluating, setIsEvaluating] = useState<boolean>(false);
 
   const handleStartEval = () => {
     setIsEvaluating(true);
     setTimeout(() => {
-      runBenchmark(rounds);
+      runBenchmark(rounds, opponent);
       setIsEvaluating(false);
-    }, 50);
+    }, 40);
   };
 
   const redRate =
@@ -32,7 +33,6 @@ export function BenchmarkEval() {
 
   return (
     <div className="flex flex-col gap-3.5 text-slate-800">
-      {/* Header */}
       <div className="border-b border-blue-100 pb-2.5">
         <h2 className="text-sm font-bold text-blue-950 tracking-wide uppercase flex items-center gap-2">
           <Trophy className="text-blue-600" size={17} />
@@ -41,7 +41,6 @@ export function BenchmarkEval() {
         <p className="text-[11px] text-slate-500">Evaluate Deep Q-Network vs Tabular Q and Heuristic bots</p>
       </div>
 
-      {/* Benchmark Setup */}
       <div className="bg-white border border-blue-100 rounded-xl p-3 space-y-3 shadow-2xs">
         <div className="flex justify-between items-center text-xs">
           <span className="font-bold text-blue-950">Test Matches:</span>
@@ -50,7 +49,7 @@ export function BenchmarkEval() {
               <button
                 key={r}
                 onClick={() => setRounds(r)}
-                className={`px-2.5 py-1 rounded-lg transition-all ${
+                className={`px-2.5 py-1 rounded-lg transition-all cursor-pointer ${
                   rounds === r
                     ? 'bg-blue-600 text-white font-bold shadow-xs'
                     : 'bg-slate-50 text-slate-600 hover:bg-blue-50 border border-slate-200'
@@ -62,17 +61,38 @@ export function BenchmarkEval() {
           </div>
         </div>
 
+        <div className="flex justify-between items-center text-xs">
+          <span className="font-bold text-blue-950">Benchmark Opponent:</span>
+          <div className="flex gap-1.5 font-mono text-xs">
+            {[
+              { id: 'tabular' as FighterPolicy, label: 'Tabular Q' },
+              { id: 'expert' as FighterPolicy, label: 'Expert Bot' },
+            ].map((op) => (
+              <button
+                key={op.id}
+                onClick={() => setOpponent(op.id)}
+                className={`px-2.5 py-1 rounded-lg transition-all cursor-pointer ${
+                  opponent === op.id
+                    ? 'bg-blue-600 text-white font-bold shadow-xs'
+                    : 'bg-slate-50 text-slate-600 hover:bg-blue-50 border border-slate-200'
+                }`}
+              >
+                {op.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
         <button
           onClick={handleStartEval}
           disabled={isEvaluating}
-          className="w-full flex items-center justify-center gap-2 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 text-white rounded-xl text-xs font-bold shadow-sm shadow-blue-500/25 transition-all"
+          className="w-full flex items-center justify-center gap-2 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 text-white rounded-xl text-xs font-bold shadow-sm shadow-blue-500/25 transition-all cursor-pointer"
         >
           <Play size={14} />
-          {isEvaluating ? 'Simulating Matches...' : `Run ${rounds}-Round Tournament (DQN vs Tabular)`}
+          {isEvaluating ? 'Simulating Matches...' : `Run ${rounds}-Round Tournament (DQN vs ${opponent.toUpperCase()})`}
         </button>
       </div>
 
-      {/* Results View */}
       {evalResults && (
         <div className="bg-white border border-blue-100 rounded-xl p-3.5 space-y-3 shadow-2xs">
           <div className="flex items-center justify-between text-xs font-bold text-blue-950 border-b border-blue-50 pb-2">
@@ -85,7 +105,6 @@ export function BenchmarkEval() {
             </span>
           </div>
 
-          {/* Win Bars */}
           <div className="space-y-2.5">
             <div>
               <div className="flex justify-between text-[11px] mb-1">
@@ -104,7 +123,9 @@ export function BenchmarkEval() {
 
             <div>
               <div className="flex justify-between text-[11px] mb-1">
-                <span className="font-bold text-blue-600">Tabular Q-Learning (Blue)</span>
+                <span className="font-bold text-blue-600">
+                  {evalResults.bluePolicy === 'expert' ? 'Expert Heuristic (Blue)' : 'Tabular Q-Learning (Blue)'}
+                </span>
                 <span className="font-mono font-semibold text-slate-700">
                   {evalResults.blueWins} wins ({blueRate}%)
                 </span>

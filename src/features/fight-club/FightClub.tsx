@@ -19,7 +19,6 @@ export function FightClub() {
   const { mode, setMode, view3D, toggle3D } = useFightStore();
 
   useEffect(() => {
-    // If in dojo mode, attach keyboard listener
     if (mode === 'dojo') {
       globalKeyboardController.attach();
     }
@@ -28,16 +27,38 @@ export function FightClub() {
     };
   }, [mode]);
 
+  // Fixed-timestep physics accumulator so 1x Dojo/Spectator bouts run at a crisp martial-arts cadence (~18Hz)
+  // while 3D rendering interpolates at 60 FPS, and Turbo Training (20x-100x) runs uncapped multi-steps per frame!
   useEffect(() => {
     let animId: number;
-    const loop = () => {
+    let lastTick = performance.now();
+    let accumulator = 0;
+    const BASE_STEP_MS = 52; // ~19 physics steps/sec at 1x real-time speed
+
+    const loop = (now: number) => {
+      const dt = Math.min(now - lastTick, 200);
+      lastTick = now;
+
       const state = useFightStore.getState();
       if (state.runState === 'running') {
         const spd = state.speed;
-        const batchLimit = Math.min(spd, 8);
-        for (let i = 0; i < batchLimit; i++) {
-          state.step();
+        if (spd <= 2) {
+          accumulator += dt * spd;
+          let stepsRun = 0;
+          while (accumulator >= BASE_STEP_MS && stepsRun < 4) {
+            state.step();
+            accumulator -= BASE_STEP_MS;
+            stepsRun++;
+          }
+        } else {
+          accumulator = 0;
+          const batchSteps = Math.min(spd, 100);
+          for (let i = 0; i < batchSteps; i++) {
+            state.step();
+          }
         }
+      } else {
+        accumulator = 0;
       }
       animId = requestAnimationFrame(loop);
     };
@@ -47,15 +68,13 @@ export function FightClub() {
   }, []);
 
   const modeTabs: { id: RoboMode; label: string; icon: any; desc: string }[] = [
-    { id: 'dojo', label: 'The Dojo', desc: 'Human vs AI', icon: Swords },
+    { id: 'dojo', label: 'Dojo', desc: 'Human vs AI', icon: Swords },
     { id: 'train', label: 'DQN Studio', desc: 'Neural Training', icon: Activity },
-    { id: 'eval', label: 'Showdown', desc: 'Tournament Eval', icon: Trophy },
-    { id: 'showtime', label: 'Spectator', desc: 'Spectator AI', icon: Compass },
   ];
 
   return (
     <div className="h-full flex flex-col bg-slate-50 text-slate-800">
-      {/* Top Robo-Dojo Navigation Bar - Clean White & Blue */}
+      {/* Top Robo-Dojo Navigation Bar */}
       <div className="bg-white border-b border-blue-100 px-5 py-2.5 flex items-center justify-between shadow-xs">
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-2.5">
@@ -66,11 +85,11 @@ export function FightClub() {
               <div className="flex items-center gap-2">
                 <span className="font-extrabold text-blue-950 text-sm tracking-tight">ROBO-DOJO</span>
                 <span className="text-[10px] text-blue-700 font-semibold px-2 py-0.5 rounded-full bg-blue-50 border border-blue-200">
-                  Deep Q-Learning Lab
+                  3D Physics & Deep Q-Learning Lab
                 </span>
               </div>
               <p className="text-[11px] text-slate-500 hidden sm:block">
-                Interactive Reinforcement Learning Fighting Arena with Real Deep Q-Networks
+                Reinforcement Learning Lab
               </p>
             </div>
           </div>
@@ -78,10 +97,9 @@ export function FightClub() {
 
         {/* Right Header Controls: Mode Tabs & 3D Toggle */}
         <div className="flex items-center gap-2.5">
-          {/* 3D / 2D Rendering Engine Toggle */}
           <button
             onClick={toggle3D}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold border transition-all ${
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold border transition-all cursor-pointer ${
               view3D
                 ? 'bg-blue-50 border-blue-300 text-blue-800 shadow-xs'
                 : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
@@ -92,7 +110,6 @@ export function FightClub() {
             <span>{view3D ? '3D Mecha View' : '2D Classic View'}</span>
           </button>
 
-          {/* Mode Switcher Tabs */}
           <div className="flex gap-1.5 bg-blue-50/70 p-1 rounded-xl border border-blue-100">
             {modeTabs.map((tab) => {
               const Icon = tab.icon;
@@ -101,7 +118,7 @@ export function FightClub() {
                 <button
                   key={tab.id}
                   onClick={() => setMode(tab.id)}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
                     active
                       ? 'bg-blue-600 text-white shadow-sm shadow-blue-500/25'
                       : 'text-slate-600 hover:text-blue-900 hover:bg-white/80'
@@ -137,22 +154,19 @@ export function FightClub() {
 
           {/* Quick Onboarding / Rule Guide */}
           <div className="mt-auto pt-2 border-t border-blue-100">
-            <InfoBanner title="Robo-Dojo Combat Rules" variant="legend" defaultOpen={false}>
+            <InfoBanner title="Robo-Dojo Physics & Combat Rules" variant="legend" defaultOpen={false}>
               <div className="text-[11px] space-y-1.5 text-slate-600">
                 <p>
-                  <strong className="text-blue-700">Punches:</strong> 10 Damage, 55px Range, 8-frame cooldown.
+                  <strong className="text-blue-700">Punches [J / Space]:</strong> 10 Damage, 56px Range, alternating lead jab & rear cross.
                 </p>
                 <p>
-                  <strong className="text-purple-700">Kicks:</strong> 15 Damage, 75px Range, 14-frame cooldown.
+                  <strong className="text-purple-700">Kicks [K / E]:</strong> 15 Damage, 76px Range, kinetic jump kick that shatters low-stamina guards.
                 </p>
                 <p>
-                  <strong className="text-emerald-700">Blocks:</strong> Reduces incoming strike damage by 80%.
+                  <strong className="text-emerald-700">Blocks [Shift]:</strong> Absorbs 80% strike damage using the 3D geodesic shield dome.
                 </p>
                 <p>
-                  <strong className="text-sky-700">Dodges [Alt/Q]:</strong> Backward leap with full invulnerability frames (I-frames) and momentum glide.
-                </p>
-                <p>
-                  <strong className="text-slate-800">Pacing Cadence:</strong> Robots reset neutral and space after combos rather than spamming attacks.
+                  <strong className="text-sky-700">3D Dodge [Alt / Q]:</strong> Jet-assisted backstep + Z-axis lateral sidestep with full I-frames.
                 </p>
               </div>
             </InfoBanner>
@@ -161,18 +175,16 @@ export function FightClub() {
 
         {/* Center: Arena & Live Combat Stage */}
         <div className="flex-1 flex flex-col overflow-hidden bg-slate-100/60">
-          {/* Combat Ring Canvas (3D Mecha or 2D Classic) */}
           <div className="flex-1 min-h-0 p-4 flex items-center justify-center">
             {view3D ? <Arena3DCanvas /> : <ArenaCanvas ref={canvasRef} />}
           </div>
 
-          {/* Bottom Telemetry & Curves */}
           <div className="h-44 border-t border-blue-100 p-3.5 bg-white shadow-xs">
             <FightStats />
           </div>
         </div>
 
-        {/* Right Pane: Algorithm Intelligence Inspector beside Spectator Arena */}
+        {/* Right Pane: Algorithm Intelligence Inspector */}
         {mode === 'showtime' && (
           <div className="w-[480px] xl:w-[520px] border-l border-blue-100 overflow-y-auto p-4 bg-white shrink-0 shadow-xs flex flex-col gap-4">
             <AlgorithmWorkings />
