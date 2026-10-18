@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="220" viewBox="0 0 960 220" role="img" aria-label="Launch RL Playground Live Demo">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#0f172a" />
+      <stop offset="50%" stop-color="#1d4ed8" />
+      <stop offset="100%" stop-color="#0f172a" />
+      <animate attributeName="x1" values="0%;-20%;0%" dur="8s" repeatCount="indefinite" />
+      <animate attributeName="x2" values="100%;120%;100%" dur="8s" repeatCount="indefinite" />
+    </linearGradient>
+    <linearGradient id="btn" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#22d3ee" />
+      <stop offset="100%" stop-color="#60a5fa" />
+    </linearGradient>
+  </defs>
+
+  <rect x="0" y="0" width="960" height="220" rx="22" fill="url(#bg)"/>
+
+  <g opacity="0.35">
+    <circle cx="140" cy="110" r="18" fill="#38bdf8">
+      <animate attributeName="r" values="18;48;18" dur="2.4s" repeatCount="indefinite" />
+      <animate attributeName="opacity" values="0.6;0;0.6" dur="2.4s" repeatCount="indefinite" />
+    </circle>
+    <circle cx="140" cy="110" r="18" fill="#38bdf8">
+      <animate attributeName="r" values="18;58;18" dur="2.4s" begin="1.2s" repeatCount="indefinite" />
+      <animate attributeName="opacity" values="0.6;0;0.6" dur="2.4s" begin="1.2s" repeatCount="indefinite" />
+    </circle>
+  </g>
+
+  <text x="195" y="90" fill="#dbeafe" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="20" font-weight="600">
+    Try the production app now
+  </text>
+  <text x="195" y="128" fill="#ffffff" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="34" font-weight="800">
+    RL Playground • Live Demo
+  </text>
+
+  <g transform="translate(700 74)">
+    <rect width="210" height="72" rx="16" fill="url(#btn)" />
+    <text x="32" y="45" fill="#082f49" font-family="Inter,Segoe UI,Arial,sans-serif" font-size="24" font-weight="800">Launch ↗</text>
+    <animateTransform attributeName="transform" type="translate" values="700 74;704 74;700 74" dur="1.8s" repeatCount="indefinite" />
+  </g>
+</svg>
